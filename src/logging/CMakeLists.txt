@@ -22,24 +22,15 @@ set_target_properties(gopher-mcp-logging-static PROPERTIES
 )
 
 target_include_directories(gopher-mcp-logging-static PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
+  $<BUILD_INTERFACE:${GOPHER_MCP_ROOT_DIR}/include>
+  $<INSTALL_INTERFACE:include/gopher-mcp>
 )
 
-# Link with fmt - use PRIVATE to avoid transitive dependency on shared library
-# The static library will embed fmt symbols, preventing downstream transitive deps
+# Public logging headers use fmt's formatting API. Propagate its target's
+# include paths and compile requirements instead of copying include directories.
 target_link_libraries(gopher-mcp-logging-static
-  PUBLIC Threads::Threads
-  PRIVATE fmt
+  PUBLIC Threads::Threads fmt::fmt
 )
-
-# Expose fmt include directories for header compilation
-if(TARGET fmt)
-  get_target_property(FMT_INCLUDE_DIR fmt INTERFACE_INCLUDE_DIRECTORIES)
-  if(FMT_INCLUDE_DIR)
-    target_include_directories(gopher-mcp-logging-static PUBLIC ${FMT_INCLUDE_DIR})
-  endif()
-endif()
 
 target_compile_features(gopher-mcp-logging-static PUBLIC cxx_std_17)
 
@@ -59,12 +50,12 @@ if(BUILD_SHARED_LIBS)
   endif()
 
   target_include_directories(gopher-mcp-logging PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+    $<BUILD_INTERFACE:${GOPHER_MCP_ROOT_DIR}/include>
+    $<INSTALL_INTERFACE:include/gopher-mcp>
   )
   
   target_link_libraries(gopher-mcp-logging PUBLIC
-    fmt
+    fmt::fmt
     Threads::Threads
   )
   
@@ -93,7 +84,7 @@ if(GOPHER_MCP_INSTALL AND NOT GOPHER_MCP_IS_SUBMODULE)
     )
   endif()
   
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/mcp/logging
+  install(DIRECTORY ${GOPHER_MCP_ROOT_DIR}/include/mcp/logging
     DESTINATION include/mcp
     FILES_MATCHING PATTERN "*.h"
   )

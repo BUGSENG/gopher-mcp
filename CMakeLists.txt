@@ -685,9 +685,9 @@ foreach(lib_target ${REAL_TARGETS})
             PUBLIC
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                 $<INSTALL_INTERFACE:include/gopher-mcp>
+                ${LIBEVENT_INCLUDE_DIRS}
             PRIVATE
                 $<BUILD_INTERFACE:$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>>
-                ${LIBEVENT_INCLUDE_DIRS}
         )
 
         # Determine if this is a static library target
@@ -702,9 +702,11 @@ foreach(lib_target ${REAL_TARGETS})
                 Threads::Threads
                 OpenSSL::SSL
                 OpenSSL::Crypto
+                # Public server headers include fmt and libevent headers.
+                fmt::fmt
+                ${LIBEVENT_LIBRARIES}
             PRIVATE
                 nlohmann_json::nlohmann_json
-                ${LIBEVENT_LIBRARIES}
                 yaml-cpp::yaml-cpp
         )
 
