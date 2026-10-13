@@ -42,7 +42,7 @@ std::string stdioMessage(const std::string& json) {
   return json + "\n";
 }
 
-class StdioServerPushTest : public ::testing::Test {
+class StdioServerPushTest : public ::testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
     // client_to_server: test writes requests, server reads them as stdin.
@@ -64,7 +64,7 @@ class StdioServerPushTest : public ::testing::Test {
     stdio_config.stdin_fd = client_to_server_[0];
     stdio_config.stdout_fd = server_to_client_[1];
     stdio_config.non_blocking = true;
-    stdio_config.use_bridge = false;  // test pipes, no bridge threads
+    stdio_config.use_bridge = GetParam();  // direct pipes or real-stdio bridge
     config.stdio_transport_config = mcp::make_optional(stdio_config);
 
     server_ = server::createMcpServer(config);
@@ -91,7 +91,12 @@ class StdioServerPushTest : public ::testing::Test {
       server_thread_.join();
     }
     server_.reset();
-    // The transport closed the fds it owned; close the test-side ends.
+    if (GetParam()) {
+      // The bridge owns its internal pipes, not the supplied external fds.
+      ::close(client_to_server_[0]);
+      ::close(server_to_client_[1]);
+    }
+    // Direct mode owns the server ends; close the test-side ends.
     if (client_to_server_[1] >= 0) {
       ::close(client_to_server_[1]);
     }
@@ -147,7 +152,7 @@ class StdioServerPushTest : public ::testing::Test {
 
 // Establish that the stdio connection is running before delivering EOF. The
 // server must return from run() without an explicit shutdown from the caller.
-TEST_F(StdioServerPushTest, StdinEofStopsServerLoop) {
+TEST_P(StdioServerPushTest, StdinEofStopsServerLoop) {
   ASSERT_TRUE(writeToServer(stdioMessage(
       R"({"jsonrpc":"2.0","id":909,"method":"ping"})")));
   ASSERT_NE(readUntilContains("\"id\":909", 5s).find("\"id\":909"),
@@ -166,7 +171,7 @@ TEST_F(StdioServerPushTest, StdinEofStopsServerLoop) {
 // must arrive on the stdio client's pipe. With connection-keyed stdio
 // sessions misclassified as "no push channel", the subscribe response
 // still arrives but the notification never does.
-TEST_F(StdioServerPushTest, ResourceUpdateReachesStdioSubscriber) {
+TEST_P(StdioServerPushTest, ResourceUpdateReachesStdioSubscriber) {
   const std::string kUri = "test://resource/stdio-watched";
 
   ASSERT_TRUE(writeToServer(stdioMessage(
@@ -190,6 +195,9 @@ TEST_F(StdioServerPushTest, ResourceUpdateReachesStdioSubscriber) {
       << pushed;
   EXPECT_NE(pushed.find(kUri), std::string::npos);
 }
+
+INSTANTIATE_TEST_SUITE_P(DirectAndBridge, StdioServerPushTest,
+                         ::testing::Bool());
 
 }  // namespace
 }  // namespace mcp

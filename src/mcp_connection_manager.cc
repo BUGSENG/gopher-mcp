@@ -321,6 +321,10 @@ VoidResult McpConnectionManager::connect() {
       return makeVoidError(err);
     }
 
+    // Receive lifecycle events from the stdio connection, including EOF.
+    // The TCP path registers these callbacks separately below.
+    active_connection_->addConnectionCallbacks(*this);
+
     // Apply filter chain to the connection's filter manager
     auto filter_factory = createFilterChainFactory();
     if (filter_factory && active_connection_) {
