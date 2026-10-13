@@ -2907,7 +2907,7 @@ void McpServer::onResponse(const jsonrpc::Response& response) {
 }
 
 void McpServer::onConnectionEvent(network::ConnectionEvent event) {
-  // Stats-only path. Per-connection cleanup lives in
+  // Legacy transport path. Per-connection cleanup lives in
   // onConnectionLifecycleEvent, invoked by the ConnectionLifecycleCallbacks
   // adapter which carries the closing connection's identity. This function
   // still runs for stdio transports (reached via ServerProtocolCallbacks)
@@ -2921,6 +2921,15 @@ void McpServer::onConnectionEvent(network::ConnectionEvent event) {
     case network::ConnectionEvent::RemoteClose:
     case network::ConnectionEvent::LocalClose:
       server_stats_.connections_active--;
+      // Legacy connection managers serve stdio. Once its only client leaves,
+      // there is nothing left to serve unless TCP listeners are also active.
+      // Only request loop exit here: shutdown() can destroy the dispatcher
+      // and must not run while a connection callback is still on its stack.
+      if (event == network::ConnectionEvent::RemoteClose && server_running_ &&
+          tcp_listeners_.empty() && !connection_managers_.empty() &&
+          main_dispatcher_) {
+        main_dispatcher_->exit();
+      }
       break;
   }
 }

@@ -1242,7 +1242,11 @@ void McpConnectionManager::onConnectionEvent(network::ConnectionEvent event) {
   const bool server_close_event =
       is_server_ && (event == network::ConnectionEvent::RemoteClose ||
                      event == network::ConnectionEvent::LocalClose);
-  if (protocol_callbacks_ && !server_close_event) {
+  // A stdio server has a single client: its EOF must reach the server so
+  // the main event loop can finish. Keep other server close events on their
+  // existing lifecycle path.
+  if (protocol_callbacks_ &&
+      (!server_close_event || config_.transport_type == TransportType::Stdio)) {
     GOPHER_LOG_DEBUG(
         "McpConnectionManager calling protocol_callbacks_->onConnectionEvent");
     protocol_callbacks_->onConnectionEvent(event);

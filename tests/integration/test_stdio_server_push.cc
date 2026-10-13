@@ -20,6 +20,7 @@
  * resource-update notification must come back on the "stdout" pipe.
  */
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <fcntl.h>
@@ -82,7 +83,10 @@ class StdioServerPushTest : public ::testing::Test {
     ASSERT_TRUE(holds_alternative<std::nullptr_t>(listen_result))
         << "McpServer::listen failed for stdio";
 
-    server_thread_ = std::thread([this]() { server_->run(); });
+    server_thread_ = std::thread([this]() {
+      server_->run();
+      run_finished_.store(true);
+    });
 
     // Keep the test-side read end non-blocking so read polls can time out.
     ::fcntl(server_to_client_[0], F_SETFL, O_NONBLOCK);
@@ -97,7 +101,9 @@ class StdioServerPushTest : public ::testing::Test {
     }
     server_.reset();
     // The transport closed the fds it owned; close the test-side ends.
-    ::close(client_to_server_[1]);
+    if (client_to_server_[1] >= 0) {
+      ::close(client_to_server_[1]);
+    }
     ::close(server_to_client_[0]);
   }
 
@@ -133,7 +139,25 @@ class StdioServerPushTest : public ::testing::Test {
   int server_to_client_[2]{-1, -1};
   std::unique_ptr<server::McpServer> server_;
   std::thread server_thread_;
+  std::atomic<bool> run_finished_{false};
 };
+
+// Establish that the stdio connection is running before delivering EOF. The
+// server must return from run() without an explicit shutdown from the caller.
+TEST_F(StdioServerPushTest, StdinEofStopsServerLoop) {
+  ASSERT_TRUE(writeToServer(frame(
+      R"({"jsonrpc":"2.0","id":909,"method":"ping"})")));
+  ASSERT_NE(readUntilContains("\"id\":909", 5s).find("\"id\":909"),
+            std::string::npos);
+
+  ASSERT_EQ(::close(client_to_server_[1]), 0);
+  client_to_server_[1] = -1;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!run_finished_.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(run_finished_.load()) << "stdio EOF did not stop the server loop";
+}
 
 // Subscribe over stdio, then push a resource update: the notification
 // must arrive on the stdio client's pipe. With connection-keyed stdio
