@@ -173,44 +173,80 @@ endif()
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-#Find libevent
-find_package(PkgConfig)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LIBEVENT libevent)
+# Prefer CMake package targets, including targets provided by a parent's
+# FetchContent declaration with OVERRIDE_FIND_PACKAGE. Optional components avoid
+# making an incomplete package fatal before the legacy discovery can run.
+set(_libevent_components core)
+if(NOT WIN32)
+    list(APPEND _libevent_components pthreads)
 endif()
+find_package(Libevent CONFIG QUIET OPTIONAL_COMPONENTS ${_libevent_components})
 
-if(NOT LIBEVENT_FOUND)
-#Try to find libevent manually
-    find_path(LIBEVENT_INCLUDE_DIR event2/event.h
-        PATHS /usr/local/include /usr/include
-    )
-    find_library(LIBEVENT_CORE_LIBRARY
-        NAMES event_core event
-        PATHS /usr/local/lib /usr/lib /usr/local/Cellar/libevent/2.1.12_1/lib
-    )
-    find_library(LIBEVENT_PTHREADS_LIBRARY
-        NAMES event_pthreads
-        PATHS /usr/local/lib /usr/lib /usr/local/Cellar/libevent/2.1.12_1/lib
-    )
-    
-    if(LIBEVENT_INCLUDE_DIR AND LIBEVENT_CORE_LIBRARY)
-        set(LIBEVENT_FOUND TRUE)
-        set(LIBEVENT_INCLUDE_DIRS ${LIBEVENT_INCLUDE_DIR})
-        set(LIBEVENT_LIBRARIES ${LIBEVENT_CORE_LIBRARY})
+set(_libevent_targets)
+foreach(_component IN LISTS _libevent_components)
+    if(TARGET libevent::${_component})
+        list(APPEND _libevent_targets libevent::${_component})
+    elseif(TARGET event_${_component})
+        # libevent's source build uses unnamespaced interface targets.
+        list(APPEND _libevent_targets event_${_component})
+    else()
+        set(_libevent_targets)
+        break()
+    endif()
+endforeach()
+
+if(_libevent_targets)
+    set(LIBEVENT_FOUND TRUE)
+    set(LIBEVENT_LIBRARIES ${_libevent_targets})
+    # The targets propagate includes and system libraries themselves. Do not
+    # retain paths from a previous pkg-config/manual lookup.
+    set(LIBEVENT_INCLUDE_DIRS "")
+    set(LIBEVENT_LIBRARY_DIRS "")
+else()
+    # Preserve pkg-config and manual discovery for installations without a
+    # usable CMake package or source-build targets.
+    set(LIBEVENT_FOUND FALSE)
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBEVENT libevent)
+    endif()
+
+    if(NOT LIBEVENT_FOUND)
+        # Try to find libevent manually
+        find_path(LIBEVENT_INCLUDE_DIR event2/event.h
+            PATHS /usr/local/include /usr/include
+        )
+        find_library(LIBEVENT_CORE_LIBRARY
+            NAMES event_core event
+            PATHS /usr/local/lib /usr/lib /usr/local/Cellar/libevent/2.1.12_1/lib
+        )
+        find_library(LIBEVENT_PTHREADS_LIBRARY
+            NAMES event_pthreads
+            PATHS /usr/local/lib /usr/lib /usr/local/Cellar/libevent/2.1.12_1/lib
+        )
+
+        if(LIBEVENT_INCLUDE_DIR AND LIBEVENT_CORE_LIBRARY)
+            set(LIBEVENT_FOUND TRUE)
+            set(LIBEVENT_INCLUDE_DIRS ${LIBEVENT_INCLUDE_DIR})
+            set(LIBEVENT_LIBRARIES ${LIBEVENT_CORE_LIBRARY})
+            if(LIBEVENT_PTHREADS_LIBRARY)
+                list(APPEND LIBEVENT_LIBRARIES ${LIBEVENT_PTHREADS_LIBRARY})
+            endif()
+        endif()
+    else()
+        # If pkg-config found it, add the pthreads library manually.
+        find_library(LIBEVENT_PTHREADS_LIBRARY
+            NAMES event_pthreads
+            PATHS ${LIBEVENT_LIBRARY_DIRS} /usr/local/lib
+        )
         if(LIBEVENT_PTHREADS_LIBRARY)
-            list(APPEND LIBEVENT_LIBRARIES ${LIBEVENT_PTHREADS_LIBRARY})
+            set(LIBEVENT_LIBRARIES ${LIBEVENT_LIBRARIES} ${LIBEVENT_PTHREADS_LIBRARY})
         endif()
     endif()
-else()
-#If pkg - config found it, we need to add pthreads library manually
-    find_library(LIBEVENT_PTHREADS_LIBRARY
-        NAMES event_pthreads
-        PATHS ${LIBEVENT_LIBRARY_DIRS} /usr/local/lib
-    )
-    if(LIBEVENT_PTHREADS_LIBRARY)
-        set(LIBEVENT_LIBRARIES ${LIBEVENT_LIBRARIES} ${LIBEVENT_PTHREADS_LIBRARY})
-    endif()
 endif()
+unset(_libevent_components)
+unset(_libevent_targets)
+unset(_component)
 
 if(NOT LIBEVENT_FOUND)
     message(FATAL_ERROR "libevent not found. Please install libevent development package.")
