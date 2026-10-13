@@ -837,6 +837,9 @@ void McpServer::performListen() {
       // TODO: Refactor stdio to use listener pattern
       McpConnectionConfig conn_config;
       conn_config.transport_type = TransportType::Stdio;
+      // MCP stdio messages are newline-delimited JSON-RPC, not the
+      // connection manager's default length-prefixed framing.
+      conn_config.use_message_framing = false;
       conn_config.buffer_limit = config_.buffer_high_watermark;
       conn_config.connection_timeout = config_.request_processing_timeout;
       conn_config.stdio_config = config_.stdio_transport_config.has_value()

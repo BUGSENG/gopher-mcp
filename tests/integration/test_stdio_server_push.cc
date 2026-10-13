@@ -22,7 +22,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <fcntl.h>
 #include <string>
 #include <thread>
@@ -38,17 +37,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
-// The server-side stdio chain uses length-prefixed framing (4-byte
-// big-endian), the same framing McpConnectionManager defaults to.
-std::string frame(const std::string& json) {
-  std::string framed;
-  uint32_t len = static_cast<uint32_t>(json.size());
-  framed.push_back(static_cast<char>((len >> 24) & 0xff));
-  framed.push_back(static_cast<char>((len >> 16) & 0xff));
-  framed.push_back(static_cast<char>((len >> 8) & 0xff));
-  framed.push_back(static_cast<char>(len & 0xff));
-  framed += json;
-  return framed;
+// MCP stdio uses one JSON-RPC message per line.
+std::string stdioMessage(const std::string& json) {
+  return json + "\n";
 }
 
 class StdioServerPushTest : public ::testing::Test {
@@ -112,9 +103,9 @@ class StdioServerPushTest : public ::testing::Test {
            static_cast<ssize_t>(bytes.size());
   }
 
-  // Accumulate framed bytes from the server until the payload of some
-  // frame contains `needle` or the budget elapses. Returns everything
-  // read (frames included) for diagnostics.
+  // Wait for a complete newline-delimited response containing the needle.
+  // Validate every complete line so a binary prefix or non-JSON stdout fails.
+  // Return all bytes read for diagnostics.
   std::string readUntilContains(const std::string& needle,
                                 std::chrono::milliseconds budget) {
     std::string received;
@@ -124,7 +115,19 @@ class StdioServerPushTest : public ::testing::Test {
       ssize_t n = ::read(server_to_client_[0], buf, sizeof(buf));
       if (n > 0) {
         received.append(buf, static_cast<size_t>(n));
-        if (received.find(needle) != std::string::npos) {
+        const auto match = received.find(needle);
+        if (match != std::string::npos &&
+            received.find('\n', match) != std::string::npos) {
+          size_t start = 0;
+          for (auto end = received.find('\n'); end != std::string::npos;
+               end = received.find('\n', start)) {
+            const auto line = received.substr(start, end - start);
+            EXPECT_NO_THROW({
+              const auto message = json::JsonValue::parse(line);
+              EXPECT_EQ(message["jsonrpc"].getString(), "2.0");
+            }) << "Invalid JSON-RPC line: " << line;
+            start = end + 1;
+          }
           return received;
         }
       } else if (n == 0) {
@@ -145,7 +148,7 @@ class StdioServerPushTest : public ::testing::Test {
 // Establish that the stdio connection is running before delivering EOF. The
 // server must return from run() without an explicit shutdown from the caller.
 TEST_F(StdioServerPushTest, StdinEofStopsServerLoop) {
-  ASSERT_TRUE(writeToServer(frame(
+  ASSERT_TRUE(writeToServer(stdioMessage(
       R"({"jsonrpc":"2.0","id":909,"method":"ping"})")));
   ASSERT_NE(readUntilContains("\"id\":909", 5s).find("\"id\":909"),
             std::string::npos);
@@ -166,7 +169,7 @@ TEST_F(StdioServerPushTest, StdinEofStopsServerLoop) {
 TEST_F(StdioServerPushTest, ResourceUpdateReachesStdioSubscriber) {
   const std::string kUri = "test://resource/stdio-watched";
 
-  ASSERT_TRUE(writeToServer(frame(
+  ASSERT_TRUE(writeToServer(stdioMessage(
       R"({"jsonrpc":"2.0","id":1,"method":"resources/subscribe","params":{"uri":")" +
       kUri + R"("}})")));
 
