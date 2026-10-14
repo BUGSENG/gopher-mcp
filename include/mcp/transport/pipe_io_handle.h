@@ -41,6 +41,63 @@ class PipeIoHandle : public network::IoSocketHandleImpl {
     }
   }
 
+  // A pipe's read end can never tell us that its separate write end has
+  // space again. Keep both events under one caller-owned FileEvent so normal
+  // connection activation, disabling and deferred destruction cover both.
+  event::FileEventPtr createFileEvent(event::Dispatcher& dispatcher,
+                                      event::FileReadyCb cb,
+                                      event::FileTriggerType trigger,
+                                      uint32_t events) override {
+    class PipeFileEvent : public event::FileEvent {
+     public:
+      PipeFileEvent(event::Dispatcher& dispatcher,
+                    int read_fd,
+                    int write_fd,
+                    event::FileReadyCb cb,
+                    event::FileTriggerType trigger,
+                    uint32_t events)
+          : read_event_(dispatcher.createFileEvent(
+                read_fd, cb, trigger, readEvents(events))),
+            write_event_(dispatcher.createFileEvent(
+                write_fd, std::move(cb), trigger, writeEvents(events))) {}
+
+      void activate(uint32_t events) override {
+        if (readEvents(events))
+          read_event_->activate(readEvents(events));
+        if (writeEvents(events))
+          write_event_->activate(writeEvents(events));
+      }
+      void setEnabled(uint32_t events) override {
+        read_event_->setEnabled(readEvents(events));
+        write_event_->setEnabled(writeEvents(events));
+      }
+      void unregisterEventIfEmulatedEdge(uint32_t events) override {
+        if (readEvents(events))
+          read_event_->unregisterEventIfEmulatedEdge(readEvents(events));
+        if (writeEvents(events))
+          write_event_->unregisterEventIfEmulatedEdge(writeEvents(events));
+      }
+      void registerEventIfEmulatedEdge(uint32_t events) override {
+        if (readEvents(events))
+          read_event_->registerEventIfEmulatedEdge(readEvents(events));
+        if (writeEvents(events))
+          write_event_->registerEventIfEmulatedEdge(writeEvents(events));
+      }
+
+     private:
+      static uint32_t readEvents(uint32_t events) {
+        return events & ~static_cast<uint32_t>(event::FileReadyType::Write);
+      }
+      static uint32_t writeEvents(uint32_t events) {
+        return events & static_cast<uint32_t>(event::FileReadyType::Write);
+      }
+      event::FileEventPtr read_event_;
+      event::FileEventPtr write_event_;
+    };
+    return std::make_unique<PipeFileEvent>(dispatcher, fd(), write_fd_,
+                                           std::move(cb), trigger, events);
+  }
+
   // Override writev to use the write FD instead of the read FD
   network::IoCallResult writev(const ConstRawSlice* slices,
                                size_t num_slices) override {

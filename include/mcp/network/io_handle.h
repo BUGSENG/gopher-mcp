@@ -261,6 +261,18 @@ class IoHandle {
   // ===== Event Integration =====
 
   /**
+   * Create a caller-owned event for this handle. Most handles use one fd;
+   * split read/write handles override this to monitor the correct fd for each
+   * direction. Disable the event before closing the handle's fds.
+   */
+  virtual event::FileEventPtr createFileEvent(event::Dispatcher& dispatcher,
+                                              event::FileReadyCb cb,
+                                              event::FileTriggerType trigger,
+                                              uint32_t events) {
+    return dispatcher.createFileEvent(fd(), std::move(cb), trigger, events);
+  }
+
+  /**
    * Initialize file event monitoring.
    * @param dispatcher Event dispatcher
    * @param cb Callback for events

@@ -385,8 +385,8 @@ ConnectionImpl::ConnectionImpl(event::Dispatcher& dispatcher,
           initial_events = static_cast<uint32_t>(event::FileReadyType::Read);
         }
 
-        file_event_ = dispatcher_.createFileEvent(
-            socket_->ioHandle().fd(),
+        file_event_ = socket_->ioHandle().createFileEvent(
+            dispatcher_,
             [this](uint32_t events) { onFileEvent(events); }, trigger_type,
             initial_events);
 

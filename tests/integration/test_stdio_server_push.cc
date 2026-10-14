@@ -38,9 +38,7 @@ namespace {
 using namespace std::chrono_literals;
 
 // MCP stdio uses one JSON-RPC message per line.
-std::string stdioMessage(const std::string& json) {
-  return json + "\n";
-}
+std::string stdioMessage(const std::string& json) { return json + "\n"; }
 
 class StdioServerPushTest : public ::testing::TestWithParam<bool> {
  protected:
@@ -130,7 +128,8 @@ class StdioServerPushTest : public ::testing::TestWithParam<bool> {
             EXPECT_NO_THROW({
               const auto message = json::JsonValue::parse(line);
               EXPECT_EQ(message["jsonrpc"].getString(), "2.0");
-            }) << "Invalid JSON-RPC line: " << line;
+            }) << "Invalid JSON-RPC line: "
+               << line;
             start = end + 1;
           }
           return received;
@@ -153,8 +152,8 @@ class StdioServerPushTest : public ::testing::TestWithParam<bool> {
 // Establish that the stdio connection is running before delivering EOF. The
 // server must return from run() without an explicit shutdown from the caller.
 TEST_P(StdioServerPushTest, StdinEofStopsServerLoop) {
-  ASSERT_TRUE(writeToServer(stdioMessage(
-      R"({"jsonrpc":"2.0","id":909,"method":"ping"})")));
+  ASSERT_TRUE(writeToServer(
+      stdioMessage(R"({"jsonrpc":"2.0","id":909,"method":"ping"})")));
   ASSERT_NE(readUntilContains("\"id\":909", 5s).find("\"id\":909"),
             std::string::npos);
 
@@ -196,7 +195,37 @@ TEST_P(StdioServerPushTest, ResourceUpdateReachesStdioSubscriber) {
   EXPECT_NE(pushed.find(kUri), std::string::npos);
 }
 
-INSTANTIATE_TEST_SUITE_P(DirectAndBridge, StdioServerPushTest,
+TEST_P(StdioServerPushTest, LargeResponseResumesAfterOutputBackpressure) {
+  const std::string payload(2 * 1024 * 1024, 'x');
+  server_->registerTool(Tool("large"),
+                        [payload](const std::string&, const optional<Metadata>&,
+                                  server::SessionContext&) {
+                          CallToolResult result;
+                          result.content.push_back(TextContent(payload));
+                          return result;
+                        });
+
+  ASSERT_TRUE(writeToServer(stdioMessage(
+      R"({"jsonrpc":"2.0","id":910,"method":"tools/call","params":{"name":"large"}})")));
+  // Let the server fill its output pipe before the client starts reading.
+  std::this_thread::sleep_for(100ms);
+  const auto response = readUntilContains("\"id\":910", 15s);
+  ASSERT_FALSE(response.empty());
+  ASSERT_EQ(response.back(), '\n')
+      << "response stalled after " << response.size() << " bytes";
+  const auto decoded = json::JsonValue::parse(response);
+  EXPECT_EQ(decoded["result"]["content"][0]["text"].getString(), payload);
+
+  // A following request must work without being needed to wake the writer.
+  ASSERT_TRUE(writeToServer(
+      stdioMessage(R"({"jsonrpc":"2.0","id":911,"method":"ping"})")));
+  const auto ping = readUntilContains("\"id\":911", 5s);
+  ASSERT_FALSE(ping.empty());
+  EXPECT_EQ(ping.back(), '\n');
+}
+
+INSTANTIATE_TEST_SUITE_P(DirectAndBridge,
+                         StdioServerPushTest,
                          ::testing::Bool());
 
 }  // namespace
