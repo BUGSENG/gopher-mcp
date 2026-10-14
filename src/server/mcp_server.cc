@@ -3424,7 +3424,10 @@ jsonrpc::Response McpServer::handleCallTool(const jsonrpc::Request& request,
                                   : json::JsonValue::object());
   }
 
-  optional<Metadata> arguments = argumentsOf(params_json);
+  optional<json::JsonValue> arguments;
+  if (params_json.isObject() && params_json.contains("arguments")) {
+    arguments = mcp::make_optional(params_json["arguments"]);
+  }
 
   // Surface the request's params._meta (out-of-band metadata, e.g. correlation
   // ids) to the tool handler via the session it already receives, as its JSON
@@ -3440,7 +3443,7 @@ jsonrpc::Response McpServer::handleCallTool(const jsonrpc::Request& request,
   GOPHER_LOG_DEBUG("Calling tool_registry_->callTool for: {}", name);
   CallToolResult result;
   try {
-    result = tool_registry_->callTool(name, arguments, session);
+    result = tool_registry_->callJsonTool(name, arguments, session);
   } catch (const ToolNotFound& unknown) {
     // A protocol error in every revision, not a tool that ran and failed:
     // isError is for what the model can act on, and there is nothing here

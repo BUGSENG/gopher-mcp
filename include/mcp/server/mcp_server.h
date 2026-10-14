@@ -47,6 +47,7 @@
 #include "mcp/filter/http_sse_filter_chain_factory.h"
 #include "mcp/filter/metrics_filter.h"
 #include "mcp/json/json_bridge.h"
+#include "mcp/json/json_serialization.h"
 #include "mcp/logging/log_macros.h"
 #include "mcp/mcp_application_base.h"  // TODO: Migrate to mcp_application_base_refactored.h
 #include "mcp/mcp_connection_manager.h"
@@ -827,6 +828,13 @@ class ToolRegistry {
                                    const optional<Metadata>& arguments,
                                    SessionContext& session)>;
 
+  // nullopt means arguments were omitted. Present JSON is preserved verbatim,
+  // including nested values, null, and strings that happen to contain JSON.
+  using JsonToolHandler =
+      std::function<CallToolResult(const std::string& name,
+                                   const optional<json::JsonValue>& arguments,
+                                   SessionContext& session)>;
+
   ToolRegistry(McpServerStats& stats) : stats_(stats) {}
 
   // Register a tool
@@ -844,6 +852,24 @@ class ToolRegistry {
    * @return False when the tool was refused, with the reason logged.
    */
   bool registerTool(const Tool& tool, ToolHandler handler) {
+    return registerJsonTool(
+        tool, [handler = std::move(handler)](
+                  const std::string& name,
+                  const optional<json::JsonValue>& arguments,
+                  SessionContext& session) {
+          optional<Metadata> flat;
+          if (arguments.has_value()) {
+            flat = mcp::make_optional(arguments->isObject()
+                                          ? json::jsonToMetadata(*arguments)
+                                          : Metadata());
+          }
+          return handler(name, flat, session);
+        });
+  }
+
+  // The JSON callback is the canonical storage; legacy callbacks adapt only
+  // when called, leaving JSON-native callbacks free of the lossy flat view.
+  bool registerJsonTool(const Tool& tool, JsonToolHandler handler) {
     // A JSON Schema is an object. What it describes may be anything in
     // 2026-07-28; the earlier revisions are only shown object schemas.
     if (tool.outputSchema.has_value() && !tool.outputSchema->isObject()) {
@@ -862,7 +888,7 @@ class ToolRegistry {
 
     std::lock_guard<std::mutex> lock(mutex_);
     tools_[tool.name] = tool;
-    tool_handlers_[tool.name] = handler;
+    tool_handlers_[tool.name] = std::move(handler);
     designated_[tool.name] = std::move(designated);
     count_ = tools_.size();
     return true;
@@ -918,6 +944,16 @@ class ToolRegistry {
   CallToolResult callTool(const std::string& name,
                           const optional<Metadata>& arguments,
                           SessionContext& session) {
+    optional<json::JsonValue> exact;
+    if (arguments.has_value()) {
+      exact = mcp::make_optional(json::metadataToExactJson(*arguments));
+    }
+    return callJsonTool(name, exact, session);
+  }
+
+  CallToolResult callJsonTool(const std::string& name,
+                              const optional<json::JsonValue>& arguments,
+                              SessionContext& session) {
     GOPHER_LOG_DEBUG("ToolRegistry::callTool invoked for: {}", name);
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -952,7 +988,7 @@ class ToolRegistry {
   std::map<std::string, Tool> tools_;
   // Signs this list's cursors, so they are good only here.
   paging::CursorSigner cursor_signer_;
-  std::map<std::string, ToolHandler> tool_handlers_;
+  std::map<std::string, JsonToolHandler> tool_handlers_;
   // Derived once at registration rather than at each call: the schema
   // does not change, and a call is not the moment to discover that a tool
   // was never usable.
@@ -1529,6 +1565,23 @@ class McpServer : public application::ApplicationBase,
                                                  const optional<Metadata>&,
                                                  SessionContext&)> handler) {
     const bool registered = tool_registry_->registerTool(tool, handler);
+    if (registered) {
+      announceChangeIfRunning(ListKind::Tools);
+    }
+    return registered;
+  }
+
+  /** Register a tool with lossless JSON arguments.
+   *
+   * The callback receives nullopt only when arguments were omitted; otherwise
+   * it receives the original JSON value. It is responsible for validating the
+   * input against its schema. Prefer this API for nested arguments and strict
+   * type checks. registerTool remains available with its legacy flat map.
+   * Registration, replacement, listing and removal work identically for both.
+   */
+  bool registerJsonTool(const Tool& tool, ToolRegistry::JsonToolHandler handler) {
+    const bool registered =
+        tool_registry_->registerJsonTool(tool, std::move(handler));
     if (registered) {
       announceChangeIfRunning(ListKind::Tools);
     }

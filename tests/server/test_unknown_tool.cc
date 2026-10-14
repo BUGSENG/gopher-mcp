@@ -201,3 +201,114 @@ TEST(ErrorDataOnTheWire, AHandlersDataIsSentAsGiven) {
   EXPECT_EQ(answer["error"]["data"].toString(), data.toString())
       << "the error's data was not sent as given";
 }
+
+// JSON-native handlers see the actual wire types, not strings produced by
+// flattening nested values. Exercise decoding and server dispatch together.
+TEST(JsonToolArguments, DispatchPreservesNestedValuesAndJsonLookingStrings) {
+  DispatchTestServer server(testConfig());
+  optional<JsonValue> received;
+  int calls = 0;
+  ASSERT_TRUE(server.registerJsonTool(
+      Tool("json"), [&](const std::string& name,
+                         const optional<JsonValue>& arguments,
+                         SessionContext&) {
+        EXPECT_EQ(name, "json");
+        received = arguments;
+        ++calls;
+        return CallToolResult();
+      }));
+
+  for (const auto& arguments : {
+           R"({"domains":[{"domain":"service","pattern":"MC4.*"}],"filter":{"enabled":true},"text":"[{\"domain\":\"service\"}]","null":null,"integer":7,"float":1.5})",
+           R"({"domains":"[{\"domain\":\"service\"}]"})"}) {
+    const auto wire = JsonValue::parse(
+        std::string(R"({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"json","arguments":)")
+        + arguments + "}}");
+    const auto answer = answerTo(server, from_json<jsonrpc::Request>(wire));
+    ASSERT_TRUE(answer.contains("result")) << answer.toString();
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(received->toString(), JsonValue::parse(arguments).toString());
+  }
+  EXPECT_EQ(calls, 2);
+}
+
+TEST(JsonToolArguments, OmissionEmptyObjectAndExplicitNullRemainDistinct) {
+  DispatchTestServer server(testConfig());
+  optional<JsonValue> received;
+  ASSERT_TRUE(server.registerJsonTool(
+      Tool("json"), [&](const std::string&, const optional<JsonValue>& arguments,
+                         SessionContext&) {
+        received = arguments;
+        return CallToolResult();
+      }));
+  for (const auto& suffix : {std::string(), std::string(",\"arguments\":{}"),
+                             std::string(",\"arguments\":null")}) {
+    const auto wire = JsonValue::parse(
+        std::string(R"({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"json")")
+        + suffix + "}}");
+    ASSERT_TRUE(answerTo(server, from_json<jsonrpc::Request>(wire)).contains("result"));
+    if (suffix.empty()) {
+      EXPECT_FALSE(received.has_value());
+    } else {
+      ASSERT_TRUE(received.has_value());
+      EXPECT_EQ(received->toString(), suffix.find("null") != std::string::npos
+                                         ? "null" : "{}");
+    }
+  }
+}
+
+TEST(JsonToolArguments, LegacyCallbacksKeepTheirFlatView) {
+  DispatchTestServer server(testConfig());
+  optional<Metadata> received;
+  ASSERT_TRUE(server.registerTool(
+      Tool("legacy"), [&](const std::string&, const optional<Metadata>& arguments,
+                           SessionContext&) {
+        received = arguments;
+        return CallToolResult();
+      }));
+  const auto wire = JsonValue::parse(
+      R"({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"legacy","arguments":{"nested":[{"x":1}],"text":"[{\"x\":1}]","number":7}}})");
+  ASSERT_TRUE(answerTo(server, from_json<jsonrpc::Request>(wire)).contains("result"));
+  ASSERT_TRUE(received.has_value());
+  EXPECT_EQ(get<std::string>(received->at("nested")), "[{\"x\":1}]");
+  EXPECT_EQ(get<std::string>(received->at("text")), "[{\"x\":1}]");
+  EXPECT_EQ(get<int64_t>(received->at("number")), 7);
+
+  answerTo(server, callFor("legacy"));
+  EXPECT_FALSE(received.has_value());
+}
+
+TEST(JsonToolArguments, ReplacementRemovalAndExceptionHandlingAreShared) {
+  McpServerStats stats;
+  ToolRegistry registry(stats);
+  SessionContext session("json-test", nullptr);
+  int legacy_calls = 0;
+  ASSERT_TRUE(registry.registerTool(
+      Tool("replace"), [&](const std::string&, const optional<Metadata>&,
+                            SessionContext&) {
+        ++legacy_calls;
+        return CallToolResult();
+      }));
+  ASSERT_TRUE(registry.registerJsonTool(
+      Tool("replace"), [](const std::string&, const optional<JsonValue>&,
+                           SessionContext&) -> CallToolResult {
+        throw std::runtime_error("json handler failed");
+      }));
+  auto result = registry.callJsonTool("replace", nullopt, session);
+  EXPECT_TRUE(result.isError);
+  EXPECT_EQ(legacy_calls, 0);
+  EXPECT_EQ(stats.tools_failed.load(), 1u);
+  EXPECT_EQ(registry.listTools().tools.size(), 1u);
+  ASSERT_TRUE(registry.registerTool(
+      Tool("replace"), [&](const std::string&, const optional<Metadata>&,
+                            SessionContext&) {
+        ++legacy_calls;
+        return CallToolResult();
+      }));
+  registry.callJsonTool("replace", nullopt, session);
+  EXPECT_EQ(legacy_calls, 1);
+  EXPECT_EQ(stats.tools_executed.load(), 1u);
+  EXPECT_TRUE(registry.unregisterTool("replace"));
+  EXPECT_TRUE(registry.empty());
+  EXPECT_THROW(registry.callJsonTool("replace", nullopt, session), ToolNotFound);
+}

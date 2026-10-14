@@ -185,6 +185,34 @@ int main() {
 }
 ```
 
+### JSON-native tool arguments
+
+Use `registerJsonTool` when a tool takes arrays or nested objects, or needs strict
+input type validation. Its callback receives `const optional<json::JsonValue>&`:
+
+```cpp
+server->registerJsonTool(tool,
+    [](const std::string& name,
+       const mcp::optional<mcp::json::JsonValue>& arguments,
+       mcp::server::SessionContext& session) -> mcp::CallToolResult {
+        // Validate the arguments against your tool's input schema here.
+        // arguments->isObject(), (*arguments)["domains"].isArray(), etc.
+        return mcp::CallToolResult();
+    });
+```
+
+`nullopt` means the client omitted `arguments`. A present value retains its
+original JSON types, including explicit null, nested objects and arrays. A
+string containing JSON remains a string. The handler is responsible for schema
+validation, including rejecting invalid top-level argument types.
+
+The existing `registerTool` API still accepts `optional<Metadata>`. Its legacy
+view represents nested objects and arrays as JSON strings. Both APIs share tool
+listing, replacement, removal, notifications and execution error handling. Use
+different names to register different tools; registering either API under an
+existing name replaces that tool and its callback. Do not change callback APIs
+without updating code that consumes their arguments.
+
 ### Create an MCP Client
 
 ```cpp
