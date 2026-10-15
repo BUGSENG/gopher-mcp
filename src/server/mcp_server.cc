@@ -3782,8 +3782,14 @@ jsonrpc::Response McpServer::handleGetPrompt(const jsonrpc::Request& request,
 
   optional<Metadata> arguments = argumentsOf(paramsOf(request));
 
-  // Get prompt
-  auto result = prompt_registry_->getPrompt(name, arguments, session);
+  // Distinguish an unknown prompt from a registered one returning no messages.
+  GetPromptResult result;
+  try {
+    result = prompt_registry_->getPrompt(name, arguments, session);
+  } catch (const PromptNotFound& unknown) {
+    return jsonrpc::Response::make_error(
+        request.id, Error(jsonrpc::INVALID_PARAMS, unknown.what()));
+  }
 
   // Answered as JSON, not through Metadata: the flat map re-reads any
   // string that looks like JSON as the object it looks like, which would

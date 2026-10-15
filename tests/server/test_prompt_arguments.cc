@@ -85,6 +85,41 @@ jsonrpc::Request getPrompt(const std::string& arguments_json) {
   return request;
 }
 
+TEST(PromptArguments, UnknownNameIsAProtocolError) {
+  PromptServer server(testConfig());
+  optional<Metadata> seen;
+  registerEcho(server, &seen);
+  CapturingContext context;
+  auto request = getPrompt(std::string());
+  (*request.params)["name"] = MetadataValue(std::string("missing"));
+
+  server.onRequestWithContext(request, context);
+
+  ASSERT_TRUE(context.captured.has_value());
+  EXPECT_EQ(json::to_json(context.captured.value())["id"].toString(), "1");
+  EXPECT_FALSE(context.captured->result.has_value());
+  ASSERT_TRUE(context.captured->error.has_value());
+  EXPECT_EQ(context.captured->error->code, jsonrpc::INVALID_PARAMS);
+  EXPECT_EQ(context.captured->error->message, "Unknown prompt: missing");
+  EXPECT_FALSE(seen.has_value());
+}
+
+TEST(PromptArguments, RegisteredEmptyPromptIsStillASuccess) {
+  PromptServer server(testConfig());
+  server.registerPrompt(Prompt("greet"),
+                        [](const std::string&, const optional<Metadata>&,
+                           SessionContext&) { return GetPromptResult(); });
+  CapturingContext context;
+
+  server.onRequestWithContext(getPrompt(std::string()), context);
+
+  ASSERT_TRUE(context.captured.has_value());
+  EXPECT_FALSE(context.captured->error.has_value());
+  ASSERT_TRUE(context.captured->result.has_value());
+  const auto wire = json::to_json(context.captured.value());
+  EXPECT_EQ(wire["result"]["messages"].size(), 0u);
+}
+
 TEST(PromptArguments, TheyReachTheHandler) {
   PromptServer server(testConfig());
   optional<Metadata> seen;

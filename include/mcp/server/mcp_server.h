@@ -115,6 +115,13 @@ class ToolNotFound : public std::runtime_error {
   std::string name_;
 };
 
+/** A prompt name that no registered handler serves. */
+class PromptNotFound : public std::runtime_error {
+ public:
+  explicit PromptNotFound(const std::string& name)
+      : std::runtime_error("Unknown prompt: " + name) {}
+};
+
 // Forward declarations
 class RequestHandler;
 class ResourceManager;
@@ -1055,8 +1062,7 @@ class PromptRegistry {
       return it->second(name, arguments, session);
     }
 
-    // Return empty result if not found
-    return GetPromptResult();
+    throw PromptNotFound(name);
   }
 
  private:
